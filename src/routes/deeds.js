@@ -229,7 +229,35 @@ router.get('/next', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ Get deed details by ID
+// ✅ Stream the actual PDF by deed ID
+router.get('/:id/file', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: 'invalid deed id' });
+
+    const q = await db.query(
+      `SELECT filepath FROM deeds WHERE id = $1`,
+      [id]
+    );
+    if (!q.rows.length || !q.rows[0].filepath) {
+      return res.status(404).send('file not found');
+    }
+
+    const filepath = q.rows[0].filepath;
+    const fullPath = path.join(uploadRoot, filepath);
+
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).send('file not found');
+    }
+
+    res.sendFile(fullPath);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('could not load file');
+  }
+});
+
+// ✅ Get deed details by ID (meta only, no file)
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
