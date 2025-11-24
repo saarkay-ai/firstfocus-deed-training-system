@@ -7,12 +7,11 @@ const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const AdmZip = require('adm-zip');
 
-// Use the SAME upload dir as app.js
-// Deeds are stored in: src/uploads/deeds
-const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '..', 'uploads', 'deeds');
+// Define upload destination (folder where PDFs are stored)
+const uploadDir = process.env.UPLOAD_PATH || path.join(__dirname, '..', 'uploads', 'deeds');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// Multer storage for single-PDF upload
+// Storage for single-PDF upload via multer
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadDir);
@@ -26,18 +25,19 @@ const storage = multer.diskStorage({
 const singleUpload = multer({
   storage,
   limits: {
-    fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 25) * 1024 * 1024 // 25MB default
+    fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 25) * 1024 * 1024 // Default 25 MB
   }
 });
 
-// Memory storage for ZIP upload
+// Separate upload handler for ZIP (use memory storage)
 const zipUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 100) * 1024 * 1024 // 100MB default
+    fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 100) * 1024 * 1024 // up to ~100MB zip
   }
 });
 
+// JWT verification middleware
 function authMiddleware(req, res, next) {
   const bearerToken = req.headers.authorization?.split(' ')[1];
   const cookieToken = req.cookies && req.cookies.token;
@@ -54,17 +54,11 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// ===============================
-// SINGLE PDF UPLOAD (ADMIN/TRAINER)
-// ===============================
+// Upload a single deed (PDF) – admin or trainer only
 router.post('/upload', authMiddleware, singleUpload.single('deed'), async (req, res) => {
   try {
     if (!['trainer', 'admin'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Forbidden' });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({ error: 'No deed file uploaded' });
     }
 
     const { originalname, filename } = req.file;
@@ -73,44 +67,49 @@ router.post('/upload', authMiddleware, singleUpload.single('deed'), async (req, 
       grantor,
       grantee,
       recording_date,
-      dated_date
+      dated_date,
+      county_name,
+      county_state,
+      apn,
+      recording_book,
+      recording_page,
+      instrument_number
     } = req.body;
 
     const result = await db.query(
       `INSERT INTO deeds (
-        filename,
-        filepath,
-        document_type,
-        grantor,
-        grantee,
-        recording_date,
-        dated_date,
-        created_by
+        filename, filepath, document_type, grantor, grantee,
+        recording_date, dated_date, county_name, county_state, apn,
+        recording_book, recording_page, instrument_number, created_by
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
       RETURNING id, filename, filepath, document_type`,
       [
         originalname,
-        filename,           // stored file name on disk
+        filename,
         document_type || null,
         grantor || null,
         grantee || null,
         recording_date || null,
         dated_date || null,
+        county_name || null,
+        county_state || null,
+        apn || null,
+        recording_book || null,
+        recording_page || null,
+        instrument_number || null,
         req.user.id
       ]
     );
 
     res.json({ deed: result.rows[0] });
   } catch (err) {
-    console.error('Single upload failed:', err);
-    res.status(500).json({ error: 'upload failed' });
+    console.error(err);
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 
-// ===============================
-// ZIP UPLOAD (MULTIPLE DEEDS)
-// ===============================
+// Upload ZIP of multiple deed PDFs – admin or trainer only
 router.post('/upload-zip', authMiddleware, zipUpload.single('zip'), async (req, res) => {
   try {
     if (!['trainer', 'admin'].includes(req.user.role)) {
@@ -147,24 +146,27 @@ router.post('/upload-zip', authMiddleware, zipUpload.single('zip'), async (req, 
       const savedName = Date.now() + '-' + Math.round(Math.random() * 1e6) + ext;
       const destPath = path.join(uploadDir, savedName);
 
+      // Write PDF to disk
       fs.writeFileSync(destPath, pdfBuffer);
 
+      // Insert into database
       const result = await db.query(
         `INSERT INTO deeds (
-          filename,
-          filepath,
-          document_type,
-          grantor,
-          grantee,
-          recording_date,
-          dated_date,
-          created_by
+          filename, filepath, document_type, grantor, grantee,
+          recording_date, dated_date, county_name, county_state, apn,
+          recording_book, recording_page, instrument_number, created_by
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
         RETURNING id, filename, filepath`,
         [
           originalname,
           savedName,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
           null,
           null,
           null,
@@ -187,9 +189,7 @@ router.post('/upload-zip', authMiddleware, zipUpload.single('zip'), async (req, 
   }
 });
 
-// ===============================
-// GET NEXT DEED FOR USER
-// ===============================
+// Get next deed for current user (auto-assign mode) – SKIP deeds whose file is missing
 router.get('/next', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -198,30 +198,32 @@ router.get('/next', authMiddleware, async (req, res) => {
       `SELECT d.id, d.filename, d.document_type, d.filepath
        FROM deeds d
        WHERE NOT EXISTS (
-         SELECT 1
-         FROM attempts a
+         SELECT 1 FROM attempts a
          WHERE a.deed_id = d.id
            AND a.user_id = $1
        )
-       ORDER BY d.id ASC
-       LIMIT 1`,
+       ORDER BY d.id ASC`,
       [userId]
     );
 
-    if (!q.rows.length) {
-      return res.status(404).json({ error: 'no more deeds available' });
+    const rows = q.rows || [];
+
+    for (const row of rows) {
+      if (!row.filepath) continue;
+      const fileOnDisk = path.join(uploadDir, row.filepath);
+      if (fs.existsSync(fileOnDisk)) {
+        return res.json({ deed: row });
+      }
     }
 
-    res.json({ deed: q.rows[0] });
+    return res.status(404).json({ error: 'no deeds with available PDF file' });
   } catch (err) {
-    console.error('Error fetching next deed:', err);
+    console.error(err);
     res.status(500).json({ error: 'could not fetch next deed' });
   }
 });
 
-// ===============================
-// GET DEED BY ID (FOR VIEWER)
-// ===============================
+// Get deed details by ID (for PDF viewer & meta)
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -229,14 +231,10 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
     const q = await db.query(
       `SELECT
-         id,
-         filename,
-         filepath,
-         document_type,
-         grantor,
-         grantee,
-         recording_date,
-         dated_date
+         id, filename, filepath, document_type,
+         grantor, grantee, recording_date, dated_date,
+         county_name, county_state, apn,
+         recording_book, recording_page, instrument_number
        FROM deeds
        WHERE id = $1`,
       [id]
@@ -246,10 +244,9 @@ router.get('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'deed not found' });
     }
 
-    const deed = q.rows[0];
-    res.json({ deed });
+    res.json({ deed: q.rows[0] });
   } catch (err) {
-    console.error('Error loading deed by id:', err);
+    console.error(err);
     res.status(500).json({ error: 'could not load deed' });
   }
 });
