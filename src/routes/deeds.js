@@ -43,7 +43,8 @@ const zipUpload = multer({
 function authMiddleware(req, res, next) {
   const bearerToken = req.headers.authorization?.split(' ')[1];
   const cookieToken = req.cookies && req.cookies.token;
-  const token = bearerToken || cookieToken;
+  const queryToken = req.query && req.query.token; // 👈 allow token in URL
+  const token = bearerToken || cookieToken || queryToken;
 
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
 
