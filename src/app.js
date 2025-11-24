@@ -15,17 +15,17 @@ const attemptsRoutes = require('./routes/attempts');
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// ✅ Ensure upload dir exists (must match routes/deeds.js)
-const uploadDir = process.env.UPLOAD_PATH || path.join(__dirname, '..', 'uploads', 'deeds');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+// ✅ Single root upload folder: /uploads
+const uploadRoot = process.env.UPLOAD_PATH || path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadRoot)) {
+  fs.mkdirSync(uploadRoot, { recursive: true });
 }
 
-// ✅ Helmet configured to ALLOW iframes & cross-origin PDFs
+// ✅ Helmet configured to allow iframes & cross-origin PDFs
 app.use(
   helmet({
-    frameguard: false,               // do NOT send X-Frame-Options
-    crossOriginResourcePolicy: false // allow other origins (GitHub Pages) to load PDFs
+    frameguard: false,               // no X-Frame-Options
+    crossOriginResourcePolicy: false // allow GitHub Pages to load PDFs
   })
 );
 
@@ -43,8 +43,8 @@ app.use(
 const limiter = rateLimit({ windowMs: 60 * 1000, max: 200 });
 app.use(limiter);
 
-// ✅ Serve deed PDFs from /uploads/deeds/...
-app.use('/uploads/deeds', express.static(uploadDir));
+// ✅ Serve files from /uploads/<filename>
+app.use('/uploads', express.static(uploadRoot));
 
 // API routes
 app.use('/api/auth', authRoutes);
@@ -52,7 +52,7 @@ app.use('/api/users', usersRoutes);
 app.use('/api/deeds', deedsRoutes);
 app.use('/api/attempts', attemptsRoutes);
 
-// Health check root
+// Health check
 app.get('/', (req, res) =>
   res.json({ ok: true, message: 'Deed Training Backend' })
 );
