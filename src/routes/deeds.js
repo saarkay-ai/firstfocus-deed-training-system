@@ -83,7 +83,7 @@ router.post('/upload', authMiddleware, singleUpload.single('deed'), async (req, 
         recording_book, recording_page, instrument_number, created_by
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-      RETURNING id, filename, document_type`,
+      RETURNING id, filename, filepath, document_type`,
       [
         originalname,
         filename,
@@ -157,7 +157,7 @@ router.post('/upload-zip', authMiddleware, zipUpload.single('zip'), async (req, 
           recording_book, recording_page, instrument_number, created_by
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-        RETURNING id, filename`,
+        RETURNING id, filename, filepath`,
         [
           originalname,
           savedName,
@@ -195,7 +195,7 @@ router.get('/next', authMiddleware, async (req, res) => {
     const userId = req.user.id;
 
     const q = await db.query(
-      `SELECT d.id, d.filename, d.document_type
+      `SELECT d.id, d.filename, d.document_type, d.filepath
        FROM deeds d
        WHERE NOT EXISTS (
          SELECT 1 FROM attempts a
@@ -215,6 +215,34 @@ router.get('/next', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'could not fetch next deed' });
+  }
+});
+
+// Get deed details by ID (for PDF viewer & meta)
+router.get('/:id', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: 'invalid deed id' });
+
+    const q = await db.query(
+      `SELECT
+         id, filename, filepath, document_type,
+         grantor, grantee, recording_date, dated_date,
+         county_name, county_state, apn,
+         recording_book, recording_page, instrument_number
+       FROM deeds
+       WHERE id = $1`,
+      [id]
+    );
+
+    if (!q.rows.length) {
+      return res.status(404).json({ error: 'deed not found' });
+    }
+
+    res.json({ deed: q.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'could not load deed' });
   }
 });
 
