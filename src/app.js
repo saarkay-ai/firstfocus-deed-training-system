@@ -7,6 +7,8 @@ const cookieParser = require('cookie-parser');
 const path = require('path');
 const fs = require('fs');
 
+const db = require('./db'); // ⬅️ DB connection (for migrations)
+
 const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
 const deedsRoutes = require('./routes/deeds');
@@ -34,6 +36,32 @@ app.use(limiter);
 
 // static uploads
 app.use('/uploads', express.static(uploadDir));
+
+/**
+ * 🔧 TEMP MIGRATION ROUTE – run ONCE to create tables in Render Postgres
+ * After it succeeds, you can safely delete this whole block.
+ */
+const migrationPath = path.join(__dirname, '..', 'migrations', '001_init.sql');
+let migrationSQL = '';
+try {
+  migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+  console.log('Loaded migration SQL from', migrationPath);
+} catch (err) {
+  console.error('Could not read migration file:', migrationPath, err.message);
+}
+
+app.get('/run-migrations', async (req, res) => {
+  if (!migrationSQL) {
+    return res.status(500).json({ error: 'Migration SQL not loaded on server' });
+  }
+  try {
+    await db.query(migrationSQL);
+    return res.json({ success: true, message: 'Migration completed' });
+  } catch (err) {
+    console.error('Migration failed:', err);
+    return res.status(500).json({ error: 'Migration failed', details: err.message });
+  }
+});
 
 // routes
 app.use('/api/auth', authRoutes);
