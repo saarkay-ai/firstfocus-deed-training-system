@@ -7,8 +7,6 @@ const cookieParser = require('cookie-parser');
 const path = require('path');
 const fs = require('fs');
 
-const db = require('./db');
-
 const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
 const deedsRoutes = require('./routes/deeds');
@@ -17,16 +15,21 @@ const attemptsRoutes = require('./routes/attempts');
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// ensure upload dir exists (root /uploads)
-const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+// =========================
+// UPLOAD DIRECTORY (PDFs)
+// =========================
+// All deed PDFs live in: src/uploads/deeds
+const uploadsRoot = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads', 'deeds');
+if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot, { recursive: true });
 
-// ✅ Relax Helmet so PDFs can be embedded in iframe from GitHub Pages
+// =========================
+// SECURITY & MIDDLEWARE
+// =========================
 app.use(
   helmet({
-    frameguard: false,                // allow iframe embedding from other origins
-    crossOriginResourcePolicy: false, // allow other origins to load static files
-    contentSecurityPolicy: false      // keep CSP simple for now
+    frameguard: false,            // allow iframe embedding from GitHub Pages
+    crossOriginResourcePolicy: false,
+    contentSecurityPolicy: false
   })
 );
 
@@ -44,10 +47,16 @@ app.use(
 const limiter = rateLimit({ windowMs: 60 * 1000, max: 200 });
 app.use(limiter);
 
-// static uploads – this will also serve /uploads/deeds/...
-app.use('/uploads', express.static(uploadDir));
+// =========================
+// STATIC FILES (PDF SERVE)
+// =========================
+// Any file saved under uploadsRoot is served as:
+//   GET /uploads/<filename>
+app.use('/uploads', express.static(uploadsRoot));
 
-// routes
+// =========================
+// ROUTES
+// =========================
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/deeds', deedsRoutes);
@@ -57,6 +66,9 @@ app.get('/', (req, res) =>
   res.json({ ok: true, message: 'Deed Training Backend' })
 );
 
+// =========================
+// START SERVER
+// =========================
 app.listen(PORT, () =>
   console.log(`Server listening on port ${PORT}`)
 );
