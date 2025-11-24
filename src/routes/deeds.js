@@ -5,26 +5,35 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
+const AdmZip = require('adm-zip');
 
-// Define upload destination
+// Define upload destination (folder where PDFs are stored)
 const uploadDir = process.env.UPLOAD_PATH || path.join(__dirname, '..', 'uploads', 'deeds');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// Upload setup
+// Storage for single-PDF upload via multer
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    const ext = path.extname(file.originalname);
+    const ext = path.extname(file.originalname) || '.pdf';
     cb(null, Date.now() + '-' + Math.round(Math.random() * 1e6) + ext);
   }
 });
 
-const upload = multer({
+const singleUpload = multer({
   storage,
   limits: {
     fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 25) * 1024 * 1024 // Default 25 MB
+  }
+});
+
+// Separate upload handler for ZIP (use memory storage)
+const zipUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 100) * 1024 * 1024 // up to ~100MB zip
   }
 });
 
@@ -45,8 +54,8 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Upload a single deed (admin or trainer only)
-router.post('/upload', authMiddleware, upload.single('deed'), async (req, res) => {
+// Upload a single deed (PDF) – admin or trainer only
+router.post('/upload', authMiddleware, singleUpload.single('deed'), async (req, res) => {
   try {
     if (!['trainer', 'admin'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Forbidden' });
@@ -74,7 +83,7 @@ router.post('/upload', authMiddleware, upload.single('deed'), async (req, res) =
         recording_book, recording_page, instrument_number, created_by
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-      RETURNING *`,
+      RETURNING id, filename, document_type`,
       [
         originalname,
         filename,
@@ -97,6 +106,86 @@ router.post('/upload', authMiddleware, upload.single('deed'), async (req, res) =
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+// Upload ZIP of multiple deed PDFs – admin or trainer only
+router.post('/upload-zip', authMiddleware, zipUpload.single('zip'), async (req, res) => {
+  try {
+    if (!['trainer', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'No ZIP file provided' });
+    }
+
+    let zip;
+    try {
+      zip = new AdmZip(req.file.buffer);
+    } catch (e) {
+      console.error('Invalid ZIP:', e);
+      return res.status(400).json({ error: 'Invalid ZIP file' });
+    }
+
+    const entries = zip.getEntries().filter(
+      (entry) =>
+        !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.pdf')
+    );
+
+    if (!entries.length) {
+      return res.status(400).json({ error: 'No PDF files found inside ZIP' });
+    }
+
+    const inserted = [];
+
+    for (const entry of entries) {
+      const pdfBuffer = entry.getData();
+      const originalname = path.basename(entry.entryName);
+      const ext = path.extname(originalname) || '.pdf';
+      const savedName = Date.now() + '-' + Math.round(Math.random() * 1e6) + ext;
+      const destPath = path.join(uploadDir, savedName);
+
+      // Write PDF to disk
+      fs.writeFileSync(destPath, pdfBuffer);
+
+      // Insert into database
+      const result = await db.query(
+        `INSERT INTO deeds (
+          filename, filepath, document_type, grantor, grantee,
+          recording_date, dated_date, county_name, county_state, apn,
+          recording_book, recording_page, instrument_number, created_by
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        RETURNING id, filename`,
+        [
+          originalname,
+          savedName,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          req.user.id
+        ]
+      );
+
+      inserted.push(result.rows[0]);
+    }
+
+    res.json({
+      count: inserted.length,
+      deeds: inserted
+    });
+  } catch (err) {
+    console.error('ZIP upload failed:', err);
+    res.status(500).json({ error: 'ZIP upload failed', details: err.message });
   }
 });
 
