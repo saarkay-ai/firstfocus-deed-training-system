@@ -31,7 +31,9 @@ const upload = multer({
 // JWT verification middleware
 function authMiddleware(req, res, next) {
   const bearerToken = req.headers.authorization?.split(' ')[1];
-  const token = bearerToken;
+  const cookieToken = req.cookies && req.cookies.token;
+  const token = bearerToken || cookieToken;
+
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
 
   try {
@@ -95,6 +97,35 @@ router.post('/upload', authMiddleware, upload.single('deed'), async (req, res) =
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+// Get next deed for current user (auto-assign mode)
+router.get('/next', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const q = await db.query(
+      `SELECT d.id, d.filename, d.document_type
+       FROM deeds d
+       WHERE NOT EXISTS (
+         SELECT 1 FROM attempts a
+         WHERE a.deed_id = d.id
+           AND a.user_id = $1
+       )
+       ORDER BY d.id ASC
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (!q.rows.length) {
+      return res.status(404).json({ error: 'no more deeds available' });
+    }
+
+    res.json({ deed: q.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'could not fetch next deed' });
   }
 });
 
