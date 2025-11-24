@@ -15,8 +15,8 @@ const attemptsRoutes = require('./routes/attempts');
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// ✅ Single root upload folder: /uploads
-const uploadRoot = process.env.UPLOAD_PATH || path.join(__dirname, '..', 'uploads');
+// ✅ Single upload folder: src/uploads  (same as routes/deeds.js)
+const uploadRoot = process.env.UPLOAD_PATH || path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadRoot)) {
   fs.mkdirSync(uploadRoot, { recursive: true });
 }
