@@ -7,37 +7,39 @@ const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const AdmZip = require('adm-zip');
 
-// Define upload destination (folder where PDFs are stored)
-const uploadDir = process.env.UPLOAD_PATH || path.join(__dirname, '..', 'uploads', 'deeds');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+// ✅ Same upload root as app.js
+const uploadRoot = process.env.UPLOAD_PATH || path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadRoot)) {
+  fs.mkdirSync(uploadRoot, { recursive: true });
+}
 
-// Storage for single-PDF upload via multer
+// Multer storage for single PDF
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, uploadDir);
+    cb(null, uploadRoot);
   },
   filename: function (req, file, cb) {
     const ext = path.extname(file.originalname) || '.pdf';
-    cb(null, Date.now() + '-' + Math.round(Math.random() * 1e6) + ext);
+    const name = Date.now() + '-' + Math.round(Math.random() * 1e6) + ext;
+    cb(null, name);
   }
 });
 
 const singleUpload = multer({
   storage,
   limits: {
-    fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 25) * 1024 * 1024 // Default 25 MB
+    fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 25) * 1024 * 1024 // 25MB default
   }
 });
 
-// Separate upload handler for ZIP (use memory storage)
+// Multer memory storage for ZIP
 const zipUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 100) * 1024 * 1024 // up to ~100MB zip
+    fileSize: (process.env.MAX_UPLOAD_SIZE ? parseInt(process.env.MAX_UPLOAD_SIZE) : 100) * 1024 * 1024 // up to 100MB ZIP
   }
 });
 
-// JWT verification middleware
 function authMiddleware(req, res, next) {
   const bearerToken = req.headers.authorization?.split(' ')[1];
   const cookieToken = req.cookies && req.cookies.token;
@@ -54,14 +56,20 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Upload a single deed (PDF) – admin or trainer only
+// ✅ Upload a single deed (PDF)
 router.post('/upload', authMiddleware, singleUpload.single('deed'), async (req, res) => {
   try {
     if (!['trainer', 'admin'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    const { originalname, filename } = req.file;
+    if (!req.file) {
+      return res.status(400).json({ error: 'No PDF file uploaded' });
+    }
+
+    const storedName = req.file.filename;      // random name on disk
+    const originalname = req.file.originalname;
+
     const {
       document_type,
       grantor,
@@ -86,7 +94,7 @@ router.post('/upload', authMiddleware, singleUpload.single('deed'), async (req, 
       RETURNING id, filename, filepath, document_type`,
       [
         originalname,
-        filename,
+        storedName,                 // filepath = stored random name
         document_type || null,
         grantor || null,
         grantee || null,
@@ -109,7 +117,7 @@ router.post('/upload', authMiddleware, singleUpload.single('deed'), async (req, 
   }
 });
 
-// Upload ZIP of multiple deed PDFs – admin or trainer only
+// ✅ Upload ZIP of multiple deed PDFs
 router.post('/upload-zip', authMiddleware, zipUpload.single('zip'), async (req, res) => {
   try {
     if (!['trainer', 'admin'].includes(req.user.role)) {
@@ -143,13 +151,11 @@ router.post('/upload-zip', authMiddleware, zipUpload.single('zip'), async (req, 
       const pdfBuffer = entry.getData();
       const originalname = path.basename(entry.entryName);
       const ext = path.extname(originalname) || '.pdf';
-      const savedName = Date.now() + '-' + Math.round(Math.random() * 1e6) + ext;
-      const destPath = path.join(uploadDir, savedName);
+      const storedName = Date.now() + '-' + Math.round(Math.random() * 1e6) + ext;
+      const destPath = path.join(uploadRoot, storedName);
 
-      // Write PDF to disk
       fs.writeFileSync(destPath, pdfBuffer);
 
-      // Insert into database
       const result = await db.query(
         `INSERT INTO deeds (
           filename, filepath, document_type, grantor, grantee,
@@ -160,7 +166,7 @@ router.post('/upload-zip', authMiddleware, zipUpload.single('zip'), async (req, 
         RETURNING id, filename, filepath`,
         [
           originalname,
-          savedName,
+          storedName,      // filepath = stored random name
           null,
           null,
           null,
@@ -189,7 +195,7 @@ router.post('/upload-zip', authMiddleware, zipUpload.single('zip'), async (req, 
   }
 });
 
-// Get next deed for current user (auto-assign mode) – SKIP deeds whose file is missing
+// ✅ Next deed for user – only those whose file actually exists
 router.get('/next', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -210,7 +216,7 @@ router.get('/next', authMiddleware, async (req, res) => {
 
     for (const row of rows) {
       if (!row.filepath) continue;
-      const fileOnDisk = path.join(uploadDir, row.filepath);
+      const fileOnDisk = path.join(uploadRoot, row.filepath);
       if (fs.existsSync(fileOnDisk)) {
         return res.json({ deed: row });
       }
@@ -223,7 +229,7 @@ router.get('/next', authMiddleware, async (req, res) => {
   }
 });
 
-// Get deed details by ID (for PDF viewer & meta)
+// ✅ Get deed details by ID
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
