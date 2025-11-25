@@ -16,6 +16,10 @@ const deedsRoutes = require('./routes/deeds');
 const attemptsRoutes = require('./routes/attempts');
 
 const app = express();
+
+// ✅ Tell Express it's behind a proxy (Render, Nginx, etc.)
+app.set('trust proxy', 1); // or true
+
 const PORT = process.env.PORT || 4000;
 
 // ✅ Single upload folder: src/uploads  (same as routes/deeds.js)
