@@ -4,113 +4,155 @@ const router = express.Router();
 const db = require('../db');
 const jwt = require('jsonwebtoken');
 
+// ============================
+// Auth middleware
+// ============================
 function authMiddleware(req, res, next) {
-  const header = req.headers.authorization || '';
-  const bearer = header.startsWith('Bearer ') ? header.split(' ')[1] : null;
+  const bearer = (req.headers.authorization || '').split(' ')[1];
   const token = bearer || (req.cookies && req.cookies.token);
   if (!token) return res.status(401).json({ error: 'not authenticated' });
+
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret');
     req.user = payload;
     return next();
-  } catch (e) {
+  } catch (err) {
     return res.status(401).json({ error: 'invalid token' });
   }
 }
 
-// normalize helper for string comparison
-function norm(str) {
-  if (!str) return '';
-  return String(str).trim().toLowerCase().replace(/\s+/g, ' ');
+// ============================
+// Scoring helpers
+// ============================
+function normStr(value) {
+  if (value === null || value === undefined) return '';
+  return value
+    .toString()
+    .trim()
+    .toUpperCase()
+    .replace(/[.,]/g, '')   // remove dots/commas
+    .replace(/\s+/g, ' ');  // collapse multiple spaces
 }
 
-// compute score & feedback based on deed truth vs attempt
-function computeScore(truth, attempt) {
+function scoreAttempt(truth, attempt) {
+  // 5 buckets × 20 points = 100
   let total = 0;
-  const feedback = [];
+  const details = [];
 
-  // 1. Grantor (20)
-  if (truth.grantor) {
-    if (norm(truth.grantor) === norm(attempt.grantor)) {
-      total += 20;
+  // Grantor (20)
+  const tGrantor = normStr(truth.grantor);
+  const aGrantor = normStr(attempt.grantor);
+  if (tGrantor && aGrantor && tGrantor === aGrantor) {
+    total += 20;
+    details.push('Grantor correct');
+  } else if (tGrantor) {
+    details.push('Grantor mismatch');
+  }
+
+  // Grantee (20)
+  const tGrantee = normStr(truth.grantee);
+  const aGrantee = normStr(attempt.grantee);
+  if (tGrantee && aGrantee && tGrantee === aGrantee) {
+    total += 20;
+    details.push('Grantee correct');
+  } else if (tGrantee) {
+    details.push('Grantee mismatch');
+  }
+
+  // Recording Date (20) – simple string compare for now
+  const tRecDate = normStr(truth.recording_date);
+  const aRecDate = normStr(attempt.recording_date);
+  if (tRecDate && aRecDate && tRecDate === aRecDate) {
+    total += 20;
+    details.push('Recording Date correct');
+  } else if (tRecDate) {
+    details.push('Recording Date mismatch');
+  }
+
+  // Dated Date (20)
+  const tDated = normStr(truth.dated_date);
+  const aDated = normStr(attempt.dated_date);
+  if (tDated && aDated && tDated === aDated) {
+    total += 20;
+    details.push('Dated Date correct');
+  } else if (tDated) {
+    details.push('Dated Date mismatch');
+  }
+
+  // Recording Info (20 total, split over book/page/instrument)
+  const tBook = normStr(truth.recording_book);
+  const tPage = normStr(truth.recording_page);
+  const tInstr = normStr(truth.instrument_number);
+
+  const aBook = normStr(attempt.recording_book);
+  const aPage = normStr(attempt.recording_page);
+  const aInstr = normStr(attempt.instrument_number);
+
+  let recPoints = 0;
+  let recDetails = [];
+
+  if (tBook) {
+    if (tBook === aBook) {
+      recPoints += 7;
+      recDetails.push('Recording Book correct');
     } else {
-      feedback.push('Grantor mismatch');
+      recDetails.push('Recording Book mismatch');
     }
-  } else {
-    feedback.push('Grantor truth not set for this deed');
   }
-
-  // 2. Grantee (20)
-  if (truth.grantee) {
-    if (norm(truth.grantee) === norm(attempt.grantee)) {
-      total += 20;
+  if (tPage) {
+    if (tPage === aPage) {
+      recPoints += 7;
+      recDetails.push('Recording Page correct');
     } else {
-      feedback.push('Grantee mismatch');
+      recDetails.push('Recording Page mismatch');
     }
-  } else {
-    feedback.push('Grantee truth not set for this deed');
   }
-
-  // 3. Recording Date (20)
-  if (truth.recording_date) {
-    if (norm(truth.recording_date) === norm(attempt.recording_date)) {
-      total += 20;
+  if (tInstr) {
+    if (tInstr === aInstr) {
+      recPoints += 6;
+      recDetails.push('Instrument Number correct');
     } else {
-      feedback.push('Recording Date mismatch');
+      recDetails.push('Instrument Number mismatch');
     }
-  } else {
-    feedback.push('Recording Date truth not set for this deed');
   }
 
-  // 4. Dated Date (20)
-  if (truth.dated_date) {
-    if (norm(truth.dated_date) === norm(attempt.dated_date)) {
-      total += 20;
-    } else {
-      feedback.push('Dated Date mismatch');
-    }
-  } else {
-    feedback.push('Dated Date truth not set for this deed');
+  if (recPoints > 0) {
+    total += recPoints;
+  }
+  if (recDetails.length > 0) {
+    details.push(...recDetails);
   }
 
-  // 5. Recording information (Book + Page + Instrument) -> 20 total, partial
-  let recPossible = 0;
-  let recMatches = 0;
-
-  const fields = [
-    { key: 'recording_book', label: 'Recording Book' },
-    { key: 'recording_page', label: 'Recording Page' },
-    { key: 'instrument_number', label: 'Instrument Number' }
-  ];
-
-  fields.forEach(f => {
-    const truthVal = truth[f.key];
-    const attemptVal = attempt[f.key];
-    if (truthVal) {
-      recPossible++;
-      if (norm(truthVal) === norm(attemptVal)) {
-        recMatches++;
-      } else {
-        feedback.push(f.label + ' mismatch');
-      }
-    }
-  });
-
-  if (recPossible > 0) {
-    const fieldScore = Math.round((recMatches / recPossible) * 20);
-    total += fieldScore;
-  } else {
-    feedback.push('Recording info (Book/Page/Instrument) truth not fully set for this deed');
+  if (details.length === 0) {
+    details.push('Attempt saved');
   }
 
-  const fbText = feedback.join('; ');
-  return { total, feedback: fbText };
+  // Clamp to 0–100
+  if (total < 0) total = 0;
+  if (total > 100) total = 100;
+
+  return {
+    totalScore: total,
+    feedback: details.join('. ') + '.'
+  };
 }
 
-// POST /api/attempts  -> save attempt with score
+// ============================
+// POST /api/attempts
+// ============================
+// Expects body: {
+//   deed_id,
+//   grantor, grantee, recording_date, dated_date, document_type,
+//   county_name, county_state, apn,
+//   recording_book, recording_page, instrument_number,
+//   time_taken_seconds
+// }
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const userId = req.user.id;
+    if (!['trainee', 'trainer', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
     const {
       deed_id,
       grantor,
@@ -128,103 +170,112 @@ router.post('/', authMiddleware, async (req, res) => {
     } = req.body;
 
     if (!deed_id) {
-      return res.status(400).json({ error: 'deed_id required' });
+      return res.status(400).json({ error: 'deed_id is required' });
     }
 
-    // Load truth from deeds
-    const deedResult = await db.query(
-      `SELECT id, grantor, grantee, recording_date, dated_date,
-              recording_book, recording_page, instrument_number
-       FROM deeds
-       WHERE id = $1`,
+    // 1) Load truth data from deeds table
+    const dq = await db.query(
+      `
+      SELECT
+        grantor,
+        grantee,
+        recording_date,
+        dated_date,
+        recording_book,
+        recording_page,
+        instrument_number
+      FROM deeds
+      WHERE id = $1
+    `,
       [deed_id]
     );
-    if (deedResult.rowCount === 0) {
+
+    if (dq.rowCount === 0) {
       return res.status(404).json({ error: 'deed not found' });
     }
-    const truth = deedResult.rows[0];
 
-    const attemptData = {
-      grantor: grantor || '',
-      grantee: grantee || '',
-      recording_date: recording_date || '',
-      dated_date: dated_date || '',
-      recording_book: recording_book || '',
-      recording_page: recording_page || '',
-      instrument_number: instrument_number || ''
+    const truth = dq.rows[0];
+
+    // 2) Calculate score & feedback
+    const attemptForScoring = {
+      grantor,
+      grantee,
+      recording_date,
+      dated_date,
+      recording_book,
+      recording_page,
+      instrument_number
     };
 
-    const { total, feedback } = computeScore(truth, attemptData);
+    const { totalScore, feedback } = scoreAttempt(truth, attemptForScoring);
 
-    const ins = await db.query(
-      `INSERT INTO attempts (
-          user_id,
-          deed_id,
-          grantor,
-          grantee,
-          recording_date,
-          dated_date,
-          document_type,
-          county_name,
-          county_state,
-          apn,
-          recording_book,
-          recording_page,
-          instrument_number,
-          total_score,
-          feedback,
-          time_taken_seconds
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-        RETURNING *`,
+    // 3) Insert into attempts table
+    // NOTE: we store core fields + score. County/recording details are used for scoring
+    // but not required to be stored in the DB table.
+    const aq = await db.query(
+      `
+      INSERT INTO attempts (
+        user_id,
+        deed_id,
+        grantor,
+        grantee,
+        recording_date,
+        dated_date,
+        document_type,
+        total_score,
+        time_taken_seconds,
+        feedback
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      RETURNING *
+    `,
       [
-        userId,
+        req.user.id,
         deed_id,
         grantor || null,
         grantee || null,
         recording_date || null,
         dated_date || null,
         document_type || null,
-        county_name || null,
-        county_state || null,
-        apn || null,
-        recording_book || null,
-        recording_page || null,
-        instrument_number || null,
-        total,
-        feedback || null,
-        time_taken_seconds || null
+        totalScore,
+        time_taken_seconds || 0,
+        feedback
       ]
     );
 
+    const attemptRow = aq.rows[0];
+
     return res.json({
-      attempt: ins.rows[0],
-      score: total,
+      attempt: attemptRow,
+      score: totalScore,
       feedback
     });
   } catch (err) {
-    console.error('Error saving attempt:', err);
-    return res.status(500).json({ error: 'failed to save attempt' });
+    console.error('Attempt save error:', err);
+    // ✅ Expose real error message so the frontend shows it
+    return res.status(500).json({
+      error: 'failed to save attempt: ' + (err.message || String(err))
+    });
   }
 });
 
-// (Optional) GET attempts for current user
-router.get('/mine', authMiddleware, async (req, res) => {
+// (Optional) GET /api/attempts/my – list attempts for current user
+router.get('/my', authMiddleware, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const result = await db.query(
-      `SELECT a.*, d.filename
-       FROM attempts a
-       LEFT JOIN deeds d ON d.id = a.deed_id
-       WHERE a.user_id = $1
-       ORDER BY a.id DESC
-       LIMIT 100`,
-      [userId]
+    const q = await db.query(
+      `
+      SELECT a.*, d.filename
+      FROM attempts a
+      JOIN deeds d ON d.id = a.deed_id
+      WHERE a.user_id = $1
+      ORDER BY a.created_at DESC NULLS LAST, a.id DESC
+    `,
+      [req.user.id]
     );
-    res.json({ attempts: result.rows });
+    return res.json({ attempts: q.rows });
   } catch (err) {
-    console.error('Error loading attempts:', err);
-    res.status(500).json({ error: 'failed to load attempts' });
+    console.error('Error fetching user attempts:', err);
+    return res.status(500).json({ error: 'failed to fetch attempts' });
   }
 });
 
