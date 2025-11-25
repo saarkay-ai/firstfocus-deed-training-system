@@ -6,50 +6,19 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
-const xlsx = require('xlsx'); // ✅ Excel support added
-// Convert Excel serial date (e.g. 44111) to ISO string "YYYY-MM-DD"
-function excelSerialToISO(serial) {
-  if (serial === null || serial === undefined || serial === '') return null;
-  const n = Number(serial);
-  if (Number.isNaN(n)) return null;
-
-  // Excel's "day 1" is 1900-01-01, but with a known off-by-2 bug, this base works well:
-  const excelEpoch = new Date(Date.UTC(1899, 11, 30)); // 1899-12-30
-  const date = new Date(excelEpoch.getTime() + n * 24 * 60 * 60 * 1000);
-
-  const yyyy = date.getUTCFullYear();
-  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(date.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`; // Postgres DATE-compatible
-}
-
-// Normalize a date cell from Excel into something Postgres DATE will accept
-function normalizeDateValue(val) {
-  if (val === null || val === undefined || val === '') return null;
-
-  // If it's numeric (Excel serial), convert
-  if (typeof val === 'number') {
-    return excelSerialToISO(val);
-  }
-
-  const s = val.toString().trim();
-  if (!s) return null;
-
-  // If it's digits only (e.g. "44111"), treat as serial too
-  if (/^\d+$/.test(s)) {
-    return excelSerialToISO(parseInt(s, 10));
-  }
-
-  // Otherwise send as string; Postgres can parse many date formats
-  return s;
-}
+const xlsx = require('xlsx');
 
 // =========================================
-// File storage setup (PDFs only)
+// Upload directory (must match app.js)
 // =========================================
 const uploadDir = process.env.UPLOAD_PATH || path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
+// =========================================
+// Multer storage for PDF files on disk
+// =========================================
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -60,20 +29,25 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: (process.env.MAX_UPLOAD_MB ? parseInt(process.env.MAX_UPLOAD_MB) : 25) * 1024 * 1024 }
+  limits: {
+    fileSize:
+      (process.env.MAX_UPLOAD_MB ? parseInt(process.env.MAX_UPLOAD_MB, 10) : 25) *
+      1024 *
+      1024
+  }
 });
 
 // =========================================
-// Excel upload storage (in-memory)
+// Multer for Excel / ZIP (in memory)
 // =========================================
 const excelUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
 });
 
-// =================================================
+// =========================================
 // Auth Helpers
-// =================================================
+// =========================================
 function authMiddleware(req, res, next) {
   const bearer = (req.headers.authorization || '').split(' ')[1];
   const token = bearer || (req.cookies && req.cookies.token);
@@ -83,12 +57,12 @@ function authMiddleware(req, res, next) {
     const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret');
     req.user = payload;
     return next();
-  } catch {
+  } catch (err) {
     return res.status(401).json({ error: 'invalid token' });
   }
 }
 
-// For file/template endpoints (token in URL)
+// For /template and /metadata (token via ?token=...)
 function authFromRequest(req) {
   let token = null;
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
@@ -99,9 +73,49 @@ function authFromRequest(req) {
   if (!token) return null;
   try {
     return jwt.verify(token, process.env.JWT_SECRET || 'dev_secret');
-  } catch {
+  } catch (err) {
     return null;
   }
+}
+
+// =========================================
+// Excel date helpers
+// =========================================
+
+// Convert Excel serial date (e.g. 44111) to ISO "YYYY-MM-DD"
+function excelSerialToISO(serial) {
+  if (serial === null || serial === undefined || serial === '') return null;
+  const n = Number(serial);
+  if (Number.isNaN(n)) return null;
+
+  // Excel epoch: 1899-12-30 works well for typical serials
+  const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+  const date = new Date(excelEpoch.getTime() + n * 24 * 60 * 60 * 1000);
+
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+// Normalize a value coming from Excel into something Postgres DATE can accept
+function normalizeDateValue(val) {
+  if (val === null || val === undefined || val === '') return null;
+
+  if (typeof val === 'number') {
+    return excelSerialToISO(val);
+  }
+
+  const s = val.toString().trim();
+  if (!s) return null;
+
+  // If pure digits, treat as serial
+  if (/^\d+$/.test(s)) {
+    return excelSerialToISO(parseInt(s, 10));
+  }
+
+  // Let Postgres parse common date strings
+  return s;
 }
 
 // ======================================================
@@ -110,7 +124,9 @@ function authFromRequest(req) {
 router.post('/upload', authMiddleware, upload.single('deed'), async (req, res) => {
   try {
     if (!['trainer', 'admin'].includes(req.user.role)) {
-      return res.status(403).json({ error: 'forbidden: only trainer/admin can upload deeds' });
+      return res
+        .status(403)
+        .json({ error: 'forbidden: only trainer/admin can upload deeds' });
     }
 
     if (!req.file) {
@@ -168,41 +184,43 @@ router.post('/upload', authMiddleware, upload.single('deed'), async (req, res) =
     });
   }
 });
+
 // ======================================================
 // TEMP: Upload ZIP of PDFs (placeholder)
 // ======================================================
-router.post('/upload-zip', authMiddleware, excelUpload.single('zip'), async (req, res) => {
-  try {
-    if (!['trainer', 'admin'].includes(req.user.role)) {
-      return res.status(403).json({ error: 'forbidden: only trainer/admin can upload deeds' });
-    }
+router.post(
+  '/upload-zip',
+  authMiddleware,
+  excelUpload.single('zip'),
+  async (req, res) => {
+    try {
+      if (!['trainer', 'admin'].includes(req.user.role)) {
+        return res
+          .status(403)
+          .json({ error: 'forbidden: only trainer/admin can upload deeds' });
+      }
 
-    if (!req.file) {
-      return res.status(400).json({ error: 'no ZIP file uploaded – please select a .zip file' });
-    }
+      if (!req.file) {
+        return res.status(400).json({ error: 'no ZIP file uploaded – please select a .zip file' });
+      }
 
-    // ❗ Placeholder: we are not yet unpacking the ZIP and inserting deeds.
-    // For now we just accept the file and respond with a clear message.
-    return res.status(501).json({
-      error: 'ZIP upload not fully implemented yet – please upload single PDFs for now.'
-    });
-  } catch (err) {
-    console.error('ZIP upload error:', err);
-    return res.status(500).json({
-      error: 'upload-zip failed: ' + (err.message || String(err))
-    });
+      // Placeholder – we’re not unpacking the ZIP yet.
+      return res.status(501).json({
+        error:
+          'ZIP upload not fully implemented yet – please upload single PDFs for now.'
+      });
+    } catch (err) {
+      console.error('ZIP upload error:', err);
+      return res.status(500).json({
+        error: 'upload-zip failed: ' + (err.message || String(err))
+      });
+    }
   }
-});
-
+);
 
 // ======================================================
 // GET Next Unattempted Deed (Trainer/Trainee)
-// ======================================================
-// ======================================================
-// GET Next Unattempted Deed (Trainer/Trainee) – only with existing PDF
-// ======================================================
-// ======================================================
-// GET Next Unattempted Deed (Trainer/Trainee) – latest with a filepath
+// Picks latest deed with a filepath
 // ======================================================
 router.get('/next', authMiddleware, async (req, res) => {
   try {
@@ -236,14 +254,33 @@ router.get('/next', authMiddleware, async (req, res) => {
   }
 });
 
-
+// ======================================================
+// GET one deed by ID (used by frontend to get filepath)
+// ======================================================
+router.get('/:id', authMiddleware, async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM deeds WHERE id = $1', [
+      req.params.id
+    ]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'deed not found' });
+    }
+    return res.json({ deed: result.rows[0] });
+  } catch (err) {
+    console.error('Error in GET /api/deeds/:id:', err);
+    return res.status(500).json({ error: 'failed to load deed' });
+  }
+});
 
 // ======================================================
-// Serve PDF file secured
+// Serve PDF file directly (not used by frontend now,
+// but kept here in case you need it later)
 // ======================================================
 router.get('/:id/file', authMiddleware, async (req, res) => {
   try {
-    const q = await db.query(`SELECT filepath FROM deeds WHERE id=$1`, [req.params.id]);
+    const q = await db.query(`SELECT filepath FROM deeds WHERE id=$1`, [
+      req.params.id
+    ]);
     if (q.rowCount === 0) return res.status(404).send('Not found');
 
     const fullPath = path.join(uploadDir, q.rows[0].filepath);
@@ -252,7 +289,8 @@ router.get('/:id/file', authMiddleware, async (req, res) => {
     }
 
     return res.sendFile(fullPath);
-  } catch {
+  } catch (err) {
+    console.error('Error in GET /api/deeds/:id/file:', err);
     return res.status(500).send('Error');
   }
 });
@@ -266,38 +304,55 @@ router.get('/template', (req, res) => {
     return res.status(403).json({ error: 'forbidden' });
   }
 
-  db.query(`
-    SELECT filename, grantor, grantee, recording_date, dated_date,
-           recording_book, recording_page, instrument_number
-    FROM deeds ORDER BY id
-  `)
-    .then(r => {
+  db.query(
+    `
+    SELECT
+      filename,
+      grantor,
+      grantee,
+      recording_date,
+      dated_date,
+      recording_book,
+      recording_page,
+      instrument_number
+    FROM deeds
+    ORDER BY id
+  `
+  )
+    .then((r) => {
       const rows = r.rows || [];
-      const data = rows.length ? rows : [{
-        filename: '',
-        grantor: '',
-        grantee: '',
-        recording_date: '',
-        dated_date: '',
-        recording_book: '',
-        recording_page: '',
-        instrument_number: ''
-      }];
+      const data =
+        rows.length > 0
+          ? rows
+          : [
+              {
+                filename: '',
+                grantor: '',
+                grantee: '',
+                recording_date: '',
+                dated_date: '',
+                recording_book: '',
+                recording_page: '',
+                instrument_number: ''
+              }
+            ];
 
       const wb = xlsx.utils.book_new();
       const ws = xlsx.utils.json_to_sheet(data);
       xlsx.utils.book_append_sheet(wb, ws, 'Metadata');
       const buf = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
-      res.setHeader('Content-Type',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
       res.setHeader(
         'Content-Disposition',
         'attachment; filename="deed_metadata_template.xlsx"'
       );
       res.send(buf);
     })
-    .catch(err => {
+    .catch((err) => {
       console.error('Template error:', err);
       res.status(500).json({ error: 'failed to generate template' });
     });
@@ -355,7 +410,8 @@ router.post('/metadata', excelUpload.single('file'), async (req, res) => {
 
     if (!Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({
-        error: 'failed to process metadata: no data rows found in Excel – ensure you filled in the template',
+        error:
+          'failed to process metadata: no data rows found in Excel – ensure you filled in the template',
         detail: 'sheet_to_json returned empty array'
       });
     }
@@ -367,50 +423,73 @@ router.post('/metadata', excelUpload.single('file'), async (req, res) => {
     for (const rawRow of rows) {
       processed++;
 
-      // Normalize headers, in case Excel changed capitalization
+      // Normalize headers
       const row = {
-        filename: (rawRow.filename || rawRow.FILENAME || rawRow['FileName'] || '').toString().trim(),
+        filename:
+          (rawRow.filename ||
+            rawRow.FILENAME ||
+            rawRow['FileName'] ||
+            '').toString().trim(),
         grantor: rawRow.grantor || rawRow.GRANTOR || rawRow['Grantor'] || '',
         grantee: rawRow.grantee || rawRow.GRANTEE || rawRow['Grantee'] || '',
-        recording_date: rawRow.recording_date || rawRow['recording_date'] || rawRow['Recording Date'] || '',
-        dated_date: rawRow.dated_date || rawRow['dated_date'] || rawRow['Dated Date'] || '',
-        recording_book: rawRow.recording_book || rawRow['recording_book'] || rawRow['Recording Book'] || '',
-        recording_page: rawRow.recording_page || rawRow['recording_page'] || rawRow['Recording Page'] || '',
-        instrument_number: rawRow.instrument_number || rawRow['instrument_number'] || rawRow['Instrument Number'] || ''
+        recording_date:
+          rawRow.recording_date ||
+          rawRow['recording_date'] ||
+          rawRow['Recording Date'] ||
+          '',
+        dated_date:
+          rawRow.dated_date ||
+          rawRow['dated_date'] ||
+          rawRow['Dated Date'] ||
+          '',
+        recording_book:
+          rawRow.recording_book ||
+          rawRow['recording_book'] ||
+          rawRow['Recording Book'] ||
+          '',
+        recording_page:
+          rawRow.recording_page ||
+          rawRow['recording_page'] ||
+          rawRow['Recording Page'] ||
+          '',
+        instrument_number:
+          rawRow.instrument_number ||
+          rawRow['instrument_number'] ||
+          rawRow['Instrument Number'] ||
+          ''
       };
 
       if (!row.filename) {
-        // Skip blank lines / header row
+        // skip header/blank lines
         continue;
       }
 
-        const r = await db.query(
-    `
-    UPDATE deeds SET
-      grantor=$2,
-      grantee=$3,
-      recording_date=$4,
-      dated_date=$5,
-      recording_book=$6,
-      recording_page=$7,
-      instrument_number=$8
-    WHERE filename=$1
-    RETURNING id
-  `,
-    [
-      row.filename,
-      row.grantor ? row.grantor.toString().trim() : null,
-      row.grantee ? row.grantee.toString().trim() : null,
-
-      // ✅ use helper to convert Excel serials like 44111 to "YYYY-MM-DD"
-      normalizeDateValue(row.recording_date),
-      normalizeDateValue(row.dated_date),
-
-      row.recording_book ? row.recording_book.toString().trim() : null,
-      row.recording_page ? row.recording_page.toString().trim() : null,
-      row.instrument_number ? row.instrument_number.toString().trim() : null
-    ]
-  );
+      const r = await db.query(
+        `
+        UPDATE deeds SET
+          grantor=$2,
+          grantee=$3,
+          recording_date=$4,
+          dated_date=$5,
+          recording_book=$6,
+          recording_page=$7,
+          instrument_number=$8
+        WHERE filename=$1
+        RETURNING id
+      `,
+        [
+          row.filename,
+          row.grantor ? row.grantor.toString().trim() : null,
+          row.grantee ? row.grantee.toString().trim() : null,
+          normalizeDateValue(row.recording_date),
+          normalizeDateValue(row.dated_date),
+          row.recording_book ? row.recording_book.toString().trim() : null,
+          row.recording_page ? row.recording_page.toString().trim() : null,
+          row.instrument_number
+            ? row.instrument_number.toString().trim()
+            : null
+        ]
+      );
 
       if (r.rowCount === 0) {
         notFound.push(row.filename);
@@ -425,7 +504,6 @@ router.post('/metadata', excelUpload.single('file'), async (req, res) => {
     });
   } catch (err) {
     console.error('Metadata upload error:', err);
-    // ✅ Put the real error message into "error" so the front-end displays it
     return res.status(500).json({
       error: 'failed to process metadata: ' + (err.message || String(err))
     });
