@@ -59,7 +59,7 @@ function scoreAttempt(truth, attempt) {
     details.push('Grantee mismatch');
   }
 
-  // Recording Date (20) – simple string compare for now
+  // Recording Date (20)
   const tRecDate = normStr(truth.recording_date);
   const aRecDate = normStr(attempt.recording_date);
   if (tRecDate && aRecDate && tRecDate === aRecDate) {
@@ -89,7 +89,7 @@ function scoreAttempt(truth, attempt) {
   const aInstr = normStr(attempt.instrument_number);
 
   let recPoints = 0;
-  let recDetails = [];
+  const recDetails = [];
 
   if (tBook) {
     if (tBook === aBook) {
@@ -209,9 +209,13 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const { totalScore, feedback } = scoreAttempt(truth, attemptForScoring);
 
+    // ✅ Prepare JSON feedback payload for DB json/jsonb column
+    const feedbackPayload = {
+      message: feedback,
+      score: totalScore
+    };
+
     // 3) Insert into attempts table
-    // NOTE: we store core fields + score. County/recording details are used for scoring
-    // but not required to be stored in the DB table.
     const aq = await db.query(
       `
       INSERT INTO attempts (
@@ -239,12 +243,13 @@ router.post('/', authMiddleware, async (req, res) => {
         document_type || null,
         totalScore,
         time_taken_seconds || 0,
-        feedback
+        JSON.stringify(feedbackPayload)   // ✅ valid JSON string
       ]
     );
 
     const attemptRow = aq.rows[0];
 
+    // Frontend expects "score" and "feedback" as a simple string
     return res.json({
       attempt: attemptRow,
       score: totalScore,
@@ -252,14 +257,13 @@ router.post('/', authMiddleware, async (req, res) => {
     });
   } catch (err) {
     console.error('Attempt save error:', err);
-    // ✅ Expose real error message so the frontend shows it
     return res.status(500).json({
       error: 'failed to save attempt: ' + (err.message || String(err))
     });
   }
 });
 
-// (Optional) GET /api/attempts/my – list attempts for current user
+// Optional: list attempts for current user
 router.get('/my', authMiddleware, async (req, res) => {
   try {
     const q = await db.query(
