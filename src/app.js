@@ -7,6 +7,9 @@ const cookieParser = require('cookie-parser');
 const path = require('path');
 const fs = require('fs');
 
+// ✅ import db to run safe migrations
+const db = require('./db');
+
 const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
 const deedsRoutes = require('./routes/deeds');
@@ -57,6 +60,15 @@ app.get('/', (req, res) =>
   res.json({ ok: true, message: 'Deed Training Backend' })
 );
 
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+// ✅ Run safe DB migrations on startup (add columns if missing)
+db.runSafeMigrations().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error('Error before starting server:', err);
+  // even if migrations fail, still start server
+  app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT} (migrations may have failed)`);
+  });
 });
