@@ -210,43 +210,119 @@ router.post('/metadata', excelUpload.single('file'), async (req, res) => {
       return res.status(403).json({ error: 'forbidden' });
     }
 
-    if (!req.file) return res.status(400).json({ error: 'no file uploaded' });
-
-    const wb = xlsx.read(req.file.buffer, { type: 'buffer' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
-
-    let updated = 0;
-    let notFound = [];
-
-    for (const row of rows) {
-      if (!row.filename) continue;
-
-      const r = await db.query(`
-        UPDATE deeds SET
-          grantor=$2, grantee=$3, recording_date=$4, dated_date=$5,
-          recording_book=$6, recording_page=$7, instrument_number=$8
-        WHERE filename=$1
-        RETURNING id
-      `, [
-        row.filename.trim(),
-        row.grantor || null,
-        row.grantee || null,
-        row.recording_date || null,
-        row.dated_date || null,
-        row.recording_book || null,
-        row.recording_page || null,
-        row.instrument_number || null,
-      ]);
-
-      if (r.rowCount === 0) notFound.push(row.filename);
-      else updated++;
+    if (!req.file) {
+      return res.status(400).json({ error: 'no file uploaded' });
     }
 
-    return res.json({ message: `Metadata updated for ${updated} deeds`, notFound });
+    let wb;
+    try {
+      wb = xlsx.read(req.file.buffer, { type: 'buffer' });
+    } catch (e) {
+      return res.status(400).json({
+        error:
+          'failed to process metadata: unable to read Excel file, please make sure you used the downloaded template and saved as .xlsx',
+        detail: e.message || String(e)
+      });
+    }
+
+    if (!wb.SheetNames || wb.SheetNames.length === 0) {
+      return res.status(400).json({
+        error: 'failed to process metadata: no sheets found in Excel file',
+        detail: 'Workbook has no SheetNames'
+      });
+    }
+
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    if (!ws) {
+      return res.status(400).json({
+        error: 'failed to process metadata: first sheet not found in Excel file',
+        detail: 'Sheet object undefined'
+      });
+    }
+
+    let rows;
+    try {
+      rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
+    } catch (e) {
+      return res.status(400).json({
+        error: 'failed to process metadata: could not parse rows from Excel file',
+        detail: e.message || String(e)
+      });
+    }
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({
+        error: 'failed to process metadata: no data rows found in Excel – ensure you filled in the template',
+        detail: 'sheet_to_json returned empty array'
+      });
+    }
+
+    let updated = 0;
+    const notFound = [];
+    let processed = 0;
+
+    for (const rawRow of rows) {
+      processed++;
+
+      // Normalize headers, in case Excel changed capitalization
+      const row = {
+        filename: (rawRow.filename || rawRow.FILENAME || rawRow['FileName'] || '').toString().trim(),
+        grantor: rawRow.grantor || rawRow.GRANTOR || rawRow['Grantor'] || '',
+        grantee: rawRow.grantee || rawRow.GRANTEE || rawRow['Grantee'] || '',
+        recording_date: rawRow.recording_date || rawRow['recording_date'] || rawRow['Recording Date'] || '',
+        dated_date: rawRow.dated_date || rawRow['dated_date'] || rawRow['Dated Date'] || '',
+        recording_book: rawRow.recording_book || rawRow['recording_book'] || rawRow['Recording Book'] || '',
+        recording_page: rawRow.recording_page || rawRow['recording_page'] || rawRow['Recording Page'] || '',
+        instrument_number: rawRow.instrument_number || rawRow['instrument_number'] || rawRow['Instrument Number'] || ''
+      };
+
+      if (!row.filename) {
+        // Skip blank lines / header row
+        continue;
+      }
+
+      const r = await db.query(
+        `
+        UPDATE deeds SET
+          grantor=$2,
+          grantee=$3,
+          recording_date=$4,
+          dated_date=$5,
+          recording_book=$6,
+          recording_page=$7,
+          instrument_number=$8
+        WHERE filename=$1
+        RETURNING id
+      `,
+        [
+          row.filename,
+          row.grantor ? row.grantor.toString().trim() : null,
+          row.grantee ? row.grantee.toString().trim() : null,
+          row.recording_date ? row.recording_date.toString().trim() : null,
+          row.dated_date ? row.dated_date.toString().trim() : null,
+          row.recording_book ? row.recording_book.toString().trim() : null,
+          row.recording_page ? row.recording_page.toString().trim() : null,
+          row.instrument_number ? row.instrument_number.toString().trim() : null
+        ]
+      );
+
+      if (r.rowCount === 0) {
+        notFound.push(row.filename);
+      } else {
+        updated++;
+      }
+    }
+
+    return res.json({
+      message: `Processed ${processed} rows. Metadata updated for ${updated} deed(s).`,
+      notFound
+    });
   } catch (err) {
     console.error('Metadata upload error:', err);
-    res.status(500).json({ error: 'failed to process metadata' });
+    // ✅ Put the real error message into "error" so the front-end displays it
+    return res.status(500).json({
+      error: 'failed to process metadata: ' + (err.message || String(err))
+    });
   }
 });
 
