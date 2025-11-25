@@ -198,25 +198,53 @@ router.post('/upload-zip', authMiddleware, excelUpload.single('zip'), async (req
 // ======================================================
 // GET Next Unattempted Deed (Trainer/Trainee)
 // ======================================================
+// ======================================================
+// GET Next Unattempted Deed (Trainer/Trainee) – only with existing PDF
+// ======================================================
 router.get('/next', authMiddleware, async (req, res) => {
   try {
-    const q = await db.query(`
+    // Get ALL unattempted deeds for this user (ordered by id)
+    const q = await db.query(
+      `
       SELECT d.*
       FROM deeds d
-      LEFT JOIN attempts a ON a.deed_id = d.id AND a.user_id = $1
+      LEFT JOIN attempts a
+        ON a.deed_id = d.id
+       AND a.user_id = $1
       WHERE a.id IS NULL
       ORDER BY d.id ASC
-      LIMIT 1
-    `, [req.user.id]);
+    `,
+      [req.user.id]
+    );
 
-    if (q.rowCount === 0)
+    if (q.rowCount === 0) {
       return res.status(404).json({ error: 'No more deeds available' });
+    }
 
-    return res.json({ deed: q.rows[0] });
+    // Find the first deed that actually has a PDF file on disk
+    let chosen = null;
+    for (const deed of q.rows) {
+      if (!deed.filepath) continue;
+      const fullPath = path.join(uploadDir, deed.filepath);
+      if (fs.existsSync(fullPath)) {
+        chosen = deed;
+        break;
+      }
+    }
+
+    if (!chosen) {
+      return res.status(404).json({
+        error: 'No more deeds with a valid PDF file available for this user'
+      });
+    }
+
+    return res.json({ deed: chosen });
   } catch (err) {
+    console.error('Error in /api/deeds/next:', err);
     return res.status(500).json({ error: 'failed to load next deed' });
   }
 });
+
 
 // ======================================================
 // Serve PDF file secured
