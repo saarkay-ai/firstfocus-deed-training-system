@@ -7,6 +7,42 @@ const path = require('path');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const xlsx = require('xlsx'); // ✅ Excel support added
+// Convert Excel serial date (e.g. 44111) to ISO string "YYYY-MM-DD"
+function excelSerialToISO(serial) {
+  if (serial === null || serial === undefined || serial === '') return null;
+  const n = Number(serial);
+  if (Number.isNaN(n)) return null;
+
+  // Excel's "day 1" is 1900-01-01, but with a known off-by-2 bug, this base works well:
+  const excelEpoch = new Date(Date.UTC(1899, 11, 30)); // 1899-12-30
+  const date = new Date(excelEpoch.getTime() + n * 24 * 60 * 60 * 1000);
+
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`; // Postgres DATE-compatible
+}
+
+// Normalize a date cell from Excel into something Postgres DATE will accept
+function normalizeDateValue(val) {
+  if (val === null || val === undefined || val === '') return null;
+
+  // If it's numeric (Excel serial), convert
+  if (typeof val === 'number') {
+    return excelSerialToISO(val);
+  }
+
+  const s = val.toString().trim();
+  if (!s) return null;
+
+  // If it's digits only (e.g. "44111"), treat as serial too
+  if (/^\d+$/.test(s)) {
+    return excelSerialToISO(parseInt(s, 10));
+  }
+
+  // Otherwise send as string; Postgres can parse many date formats
+  return s;
+}
 
 // =========================================
 // File storage setup (PDFs only)
@@ -281,30 +317,33 @@ router.post('/metadata', excelUpload.single('file'), async (req, res) => {
         continue;
       }
 
-      const r = await db.query(
-        `
-        UPDATE deeds SET
-          grantor=$2,
-          grantee=$3,
-          recording_date=$4,
-          dated_date=$5,
-          recording_book=$6,
-          recording_page=$7,
-          instrument_number=$8
-        WHERE filename=$1
-        RETURNING id
-      `,
-        [
-          row.filename,
-          row.grantor ? row.grantor.toString().trim() : null,
-          row.grantee ? row.grantee.toString().trim() : null,
-          row.recording_date ? row.recording_date.toString().trim() : null,
-          row.dated_date ? row.dated_date.toString().trim() : null,
-          row.recording_book ? row.recording_book.toString().trim() : null,
-          row.recording_page ? row.recording_page.toString().trim() : null,
-          row.instrument_number ? row.instrument_number.toString().trim() : null
-        ]
-      );
+        const r = await db.query(
+    `
+    UPDATE deeds SET
+      grantor=$2,
+      grantee=$3,
+      recording_date=$4,
+      dated_date=$5,
+      recording_book=$6,
+      recording_page=$7,
+      instrument_number=$8
+    WHERE filename=$1
+    RETURNING id
+  `,
+    [
+      row.filename,
+      row.grantor ? row.grantor.toString().trim() : null,
+      row.grantee ? row.grantee.toString().trim() : null,
+
+      // ✅ use helper to convert Excel serials like 44111 to "YYYY-MM-DD"
+      normalizeDateValue(row.recording_date),
+      normalizeDateValue(row.dated_date),
+
+      row.recording_book ? row.recording_book.toString().trim() : null,
+      row.recording_page ? row.recording_page.toString().trim() : null,
+      row.instrument_number ? row.instrument_number.toString().trim() : null
+    ]
+  );
 
       if (r.rowCount === 0) {
         notFound.push(row.filename);
