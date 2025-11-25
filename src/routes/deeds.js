@@ -110,43 +110,90 @@ function authFromRequest(req) {
 router.post('/upload', authMiddleware, upload.single('deed'), async (req, res) => {
   try {
     if (!['trainer', 'admin'].includes(req.user.role)) {
-      return res.status(403).json({ error: 'forbidden' });
+      return res.status(403).json({ error: 'forbidden: only trainer/admin can upload deeds' });
     }
 
-    if (!req.file) return res.status(400).json({ error: 'file missing' });
+    if (!req.file) {
+      return res.status(400).json({ error: 'no file uploaded – please select a PDF' });
+    }
 
     const { originalname, filename } = req.file;
     const {
-      document_type, grantor, grantee, recording_date,
-      dated_date, recording_book, recording_page, instrument_number
+      document_type,
+      grantor,
+      grantee,
+      recording_date,
+      dated_date,
+      recording_book,
+      recording_page,
+      instrument_number
     } = req.body;
 
-    const q = await db.query(
-      `INSERT INTO deeds
-        (filename, filepath, document_type, grantor, grantee, recording_date,
-         dated_date, recording_book, recording_page, instrument_number, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       RETURNING *`,
+    const result = await db.query(
+      `
+      INSERT INTO deeds (
+        filename,
+        filepath,
+        document_type,
+        grantor,
+        grantee,
+        recording_date,
+        dated_date,
+        recording_book,
+        recording_page,
+        instrument_number
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      RETURNING *
+    `,
       [
-        originalname, filename,
+        originalname,
+        filename,
         document_type || null,
         grantor || null,
         grantee || null,
-        recording_date || null,
-        dated_date || null,
+        normalizeDateValue(recording_date),
+        normalizeDateValue(dated_date),
         recording_book || null,
         recording_page || null,
-        instrument_number || null,
-        req.user.id
+        instrument_number || null
       ]
     );
 
-    res.json({ deed: q.rows[0] });
+    return res.json({ deed: result.rows[0] });
   } catch (err) {
     console.error('Upload error:', err);
-    res.status(500).json({ error: 'upload failed' });
+    return res.status(500).json({
+      error: 'upload failed: ' + (err.message || String(err))
+    });
   }
 });
+// ======================================================
+// TEMP: Upload ZIP of PDFs (placeholder)
+// ======================================================
+router.post('/upload-zip', authMiddleware, excelUpload.single('zip'), async (req, res) => {
+  try {
+    if (!['trainer', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'forbidden: only trainer/admin can upload deeds' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'no ZIP file uploaded – please select a .zip file' });
+    }
+
+    // ❗ Placeholder: we are not yet unpacking the ZIP and inserting deeds.
+    // For now we just accept the file and respond with a clear message.
+    return res.status(501).json({
+      error: 'ZIP upload not fully implemented yet – please upload single PDFs for now.'
+    });
+  } catch (err) {
+    console.error('ZIP upload error:', err);
+    return res.status(500).json({
+      error: 'upload-zip failed: ' + (err.message || String(err))
+    });
+  }
+});
+
 
 // ======================================================
 // GET Next Unattempted Deed (Trainer/Trainee)
