@@ -16,6 +16,12 @@ const deedsRoutes = require('./routes/deeds');
 const attemptsRoutes = require('./routes/attempts');
 
 const app = express();
+app.set('trust proxy', 1); // Render proxy
+// ...
+// If UPLOAD_TO_S3 is false, serve local uploads:
+if (!process.env.UPLOAD_TO_S3 || process.env.UPLOAD_TO_S3 !== 'true') {
+  app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+}
 
 // ✅ Tell Express it's behind a proxy (Render, Nginx, etc.)
 app.set('trust proxy', 1); // or true
