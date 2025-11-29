@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Deed Training Platform</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+    header {
+      background: linear-gradient(90deg, #0ea5e9, #2563eb);
+      color: white;
+      padding: 12px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 18px;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 20px auto;
+      padding: 0 12px;
+      <!-- ====== ADMIN / TRAINER DASHBOARD (insert inside .wrap) ====== -->
+<div id="adminDashboardCard" class="card" style="display:none; margin-top:12px;">
+  <h2>Admin / Trainer Dashboard</h2>
+
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0 8px 0;">
+    <div style="background:#fff;padding:10px;border-radius:8px;min-width:140px;box-shadow:0 4px 8px rgba(0,0,0,0.04);">
+      <div class="muted">Total Attempts</div>
+      <strong id="statTotalAttempts">0</strong>
+    </div>
+    <div style="background:#fff;padding:10px;border-radius:8px;min-width:140px;box-shadow:0 4px 8px rgba(0,0,0,0.04);">
+      <div class="muted">Avg Score</div>
+      <strong id="statAvgScore">0%</strong>
+    </div>
+    <div style="background:#fff;padding:10px;border-radius:8px;min-width:140px;box-shadow:0 4px 8px rgba(0,0,0,0.04);">
+      <div class="muted">Best Score</div>
+      <strong id="statBestScore">0</strong>
+    </div>
+    <div style="background:#fff;padding:10px;border-radius:8px;min-width:140px;box-shadow:0 4px 8px rgba(0,0,0,0.04);">
+      <div class="muted">Users</div>
+      <strong id="statUsers">0</strong>
+    </div>
+    <div style="background:#fff;padding:10px;border-radius:8px;min-width:140px;box-shadow:0 4px 8px rgba(0,0,0,0.04);">
+      <div class="muted">Deeds w/ PDF</div>
+      <strong id="statDeedsPdf">0</strong>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+    <label style="margin:0 6px 0 0">Filter by Trainee</label>
+    <select id="filterTrainee" style="padding:8px;border-radius:8px;border:1px solid #d1d5db">
+      <option value="">-- All trainees --</option>
+    </select>
+    <button onclick="refreshAttempts()" style="margin-left:6px;">Refresh</button>
+    <button onclick="exportAttempts()" style="margin-left:6px;">Export CSV</button>
+  </div>
+
+  <div>
+    <h3 style="margin:8px 0">Recent Attempts</h3>
+    <div style="overflow:auto;max-height:380px;border-radius:8px;">
+      <table id="attemptsTable" style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="text-align:left;background:#f8fafc;">
+            <th style="padding:8px;border-bottom:1px solid #e5e7eb">Attempt</th>
+            <th style="padding:8px;border-bottom:1px solid #e5e7eb">Trainee</th>
+            <th style="padding:8px;border-bottom:1px solid #e5e7eb">Deed</th>
+            <th style="padding:8px;border-bottom:1px solid #e5e7eb">Score</th>
+            <th style="padding:8px;border-bottom:1px solid #e5e7eb">Time(s)</th>
+            <th style="padding:8px;border-bottom:1px solid #e5e7eb">Feedback</th>
+            <th style="padding:8px;border-bottom:1px solid #e5e7eb">Date</th>
+          </tr>
+        </thead>
+        <tbody id="attemptsBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ====== DASHBOARD JS - paste near the end of body AFTER your existing script block ====== -->
+<script>
+(function(){
+  if (typeof API_BASE === 'undefined') window.API_BASE = '';
+  if (typeof authToken === 'undefined') window.authToken = localStorage.getItem('authToken') || null;
+  if (typeof currentUser === 'undefined' && localStorage.getItem('currentUser')) {
+    try { window.currentUser = JSON.parse(localStorage.getItem('currentUser')); } catch(e){ window.currentUser = null; }
+  }
+
+  window.maybeShowAdminDashboard = function(){
+    const el = document.getElementById('adminDashboardCard');
+    if(!el) return;
+    if(!window.currentUser || !window.authToken) {
+      el.style.display = 'none';
+      return;
+    }
+    if (['admin','trainer'].includes(window.currentUser.role)) {
+      el.style.display = 'block';
+      loadDashboardStats();
+      loadTraineeFilter();
+      refreshAttempts();
+    } else {
+      el.style.display = 'none';
+    }
+  };
+
+  window.loadDashboardStats = async function(){
+    try {
+      const res = await fetch((API_BASE || '') + '/api/dashboard/stats', {
+        headers: { 'Authorization': 'Bearer ' + (window.authToken || '') },
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) { console.error('dashboard/stats error', data); return; }
+      document.getElementById('statTotalAttempts').textContent = data.totalAttempts ?? 0;
+      document.getElementById('statAvgScore').textContent = (data.avgScore ?? 0) + '%';
+      document.getElementById('statBestScore').textContent = data.bestScore ?? 0;
+      document.getElementById('statUsers').textContent = data.totalUsers ?? 0;
+      document.getElementById('statDeedsPdf').textContent = data.deedsWithPdf ?? 0;
+    } catch (err) { console.error('loadDashboardStats err', err); }
+  };
+
+  window.loadTraineeFilter = async function(){
+    try {
+      const res = await fetch((API_BASE || '') + '/api/dashboard/users', {
+        headers: { 'Authorization': 'Bearer ' + (window.authToken || '') },
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) { console.error('dashboard/users error', data); return; }
+      const sel = document.getElementById('filterTrainee');
+      sel.innerHTML = '<option value="">-- All trainees --</option>';
+      (data.users || []).forEach(u => {
+        if (u.role === 'trainee') {
+          const opt = document.createElement('option');
+          opt.value = u.id;
+          opt.textContent = u.username + ' (id:' + u.id + ')';
+          sel.appendChild(opt);
+        }
+      });
+    } catch (err) { console.error('loadTraineeFilter err', err); }
+  };
+
+  window.refreshAttempts = async function(){
+    try {
+      const sel = document.getElementById('filterTrainee');
+      const userId = sel ? sel.value : '';
+      let url = (API_BASE || '') + '/api/dashboard/attempts';
+      if (userId) url += '?userId=' + encodeURIComponent(userId);
+      const res = await fetch(url, {
+        headers: { 'Authorization': 'Bearer ' + (window.authToken || '') },
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) { console.error('dashboard/attempts error', data); return; }
+      const tbody = document.getElementById('attemptsBody');
+      tbody.innerHTML = '';
+      (data.attempts || []).forEach(a => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid #eef2ff';
+        tr.innerHTML = `
+          <td style="padding:8px">${a.id}</td>
+          <td style="padding:8px">${a.username ? a.username : ''} (id:${a.user_id})</td>
+          <td style="padding:8px">${a.deed_id} ${a.filename ? '('+a.filename+')' : ''}</td>
+          <td style="padding:8px">${a.total_score ?? ''}</td>
+          <td style="padding:8px">${a.time_taken_seconds ?? ''}</td>
+          <td style="padding:8px;max-width:240px;white-space:pre-wrap;word-break:break-word">${a.feedback ? a.feedback : ''}</td>
+          <td style="padding:8px">${a.created_at ? (new Date(a.created_at)).toLocaleString() : ''}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    } catch (err) { console.error('refreshAttempts err', err); }
+  };
+
+  window.exportAttempts = function(){
+    const sel = document.getElementById('filterTrainee');
+    const userId = sel ? sel.value : '';
+    let url = (API_BASE || '') + '/api/dashboard/export';
+    if (userId) url += '?userId=' + encodeURIComponent(userId);
+    const token = window.authToken || '';
+    fetch(url, { headers: { 'Authorization': 'Bearer ' + token }, credentials: 'include' })
+      .then(r => {
+        if (!r.ok) throw new Error('Export failed');
+        return r.blob();
+      })
+      .then(blob => {
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = 'attempts-export.csv';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(blobUrl);
+      })
+      .catch(err => { console.error('exportAttempts err', err); alert('Export failed'); });
+  };
+
+  document.addEventListener('DOMContentLoaded', function(){
+    try { maybeShowAdminDashboard(); } catch(e) {}
+  });
+
+  window._dashboard = {
+    loadDashboardStats, loadTraineeFilter, refreshAttempts, exportAttempts, maybeShowAdminDashboard
+  };
+})();
+</script>
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 16px 18px;
+      box-shadow: 0 8px 20px rgba(15,23,42,0.08);
+      margin-bottom: 16px;
+    }
+    .card h2 {
+      margin-top: 0;
+      font-size: 18px;
+    }
+    label {
+      display: block;
+      margin-top: 8px;
+      font-size: 14px;
+      color: #374151;
+    }
+    input, select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      margin-top: 4px;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      font-size: 14px;
+    }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 8px 16px;
+      font-size: 14px;
+      cursor: pointer;
+      background: #2563eb;
+      color: white;
+      margin-top: 12px;
+    }
+    button.secondary {
+      background: #6b7280;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 900px) {
+      .row {
+        grid-template-columns: 1fr;
+      }
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: #e5e7eb;
+      color: #374151;
+      margin-left: 8px;
+    }
+    .muted {
+      color: #6b7280;
+      font-size: 13px;
+    }
+    hr {
+      border: 0;
+      border-top: 1px solid #e5e7eb;
+      margin: 12px 0;
+    }
+    .viewer-box {
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      background: #111827;
+      color: #e5e7eb;
+      padding: 10px;
+      min-height: 60px;
+      font-size: 13px;
+    }
+    .section-label {
+      margin-top: 12px;
+      font-weight: 600;
+      font-size: 14px;
+      color: #111827;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Deed Training Platform</h1>
+    <div id="userInfo" class="muted"></div>
+  </header>
+
+  <div class="wrap">
+
+    <!-- LOGIN CARD -->
+    <div id="loginCard" class="card">
+      <h2>Login</h2>
+      <label>Username</label>
+      <input id="loginUsername" />
+
+      <label>Password</label>
+      <input id="loginPassword" type="password" />
+
+      <button onclick="loginUser()">Login</button>
+      <div class="muted" style="margin-top:8px;">Ask admin to create your account.</div>
+    </div>
+
+    <!-- MAIN APP WRAPPER -->
+    <div id="appArea" style="display:none;">
+
+      <!-- DASHBOARD / ROLE INFO -->
+      <div class="card">
+        <h2>Welcome <span id="dashUsername"></span>
+          <span id="dashRole" class="badge"></span>
+        </h2>
+        <div id="dashStats" class="muted">You are now connected to the live backend.</div>
+        <button class="secondary" onclick="logout()">Logout</button>
+      </div>
+
+      <div class="row">
+
+        <!-- ADMIN PANEL -->
+        <div id="adminPanel" class="card" style="display:none;">
+          <h2>Admin – Create User</h2>
+          <label>New Username</label>
+          <input id="newUser" />
+
+          <label>New Password</label>
+          <input id="newPass" type="password" />
+
+          <label>Role</label>
+          <select id="newRole">
+            <option value="trainee">Trainee</option>
+            <option value="trainer">Trainer</option>
+            <option value="admin">Admin</option>
+          </select>
+
+          <button onclick="createUserFromAdmin()">Create User</button>
+          <div id="userCreateStatus" class="muted" style="margin-top:8px;"></div>
+        </div>
+
+        <!-- DEED UPLOAD (ADMIN / TRAINER) -->
+        <div id="uploadPanel" class="card" style="display:none;">
+          <h2>Upload Deeds & Metadata</h2>
+
+          <!-- Single PDF -->
+          <label>Single Deed PDF</label>
+          <input type="file" id="deedUploadInput" accept="application/pdf" />
+
+          <button onclick="uploadDeedToBackend()">Upload Single PDF</button>
+          <div id="uploadStatus" class="muted" style="margin-top:8px;"></div>
+
+          <hr />
+
+          <!-- ZIP upload (placeholder) -->
+          <h3 style="margin-top:8px;font-size:16px;">Upload ZIP (Multiple Deeds)</h3>
+          <label>Select ZIP file containing many PDFs</label>
+          <input type="file" id="zipUploadInput" accept=".zip,application/zip" />
+          <button onclick="uploadZipOfDeeds()">Upload ZIP of Deeds</button>
+          <div id="zipUploadStatus" class="muted" style="margin-top:8px;"></div>
+
+          <hr />
+
+          <!-- Metadata template -->
+          <h3 style="margin-top:8px;font-size:16px;">Metadata Template (.xlsx)</h3>
+          <button onclick="downloadMetadataTemplate()">Download Template</button>
+
+          <label style="margin-top:8px;">Upload Filled Metadata Template (.xlsx)</label>
+          <input type="file" id="metaFileInput" accept=".xlsx" />
+          <button onclick="uploadMetadataTemplate()">Upload Metadata</button>
+          <div id="metaStatus" class="muted" style="margin-top:8px;"></div>
+        </div>
+
+      </div>
+
+      <!-- TRAINEE ATTEMPT WITH VIEWER + FIELDS -->
+      <div id="traineePanel" class="card" style="display:none;">
+        <h2>Trainee – Practice Capture</h2>
+        <div class="muted">Use “Next Deed” to get a document, open the PDF, and type the information.</div>
+
+        <div class="row" style="margin-top:12px; align-items:flex-start;">
+          <!-- PDF VIEWER / INFO -->
+          <div>
+            <h3 style="margin-top:0;font-size:16px;">Deed Document</h3>
+            <div id="deedViewer" class="viewer-box">
+              No deed loaded yet.
+            </div>
+            <div class="muted" id="viewerHint" style="margin-top:6px;">
+              Click “Next Deed” to start.
+            </div>
+            <div class="muted" id="currentDeedInfo" style="margin-top:6px;">
+              Current Deed: none.
+            </div>
+            <div class="muted" id="pdfLinkRow" style="margin-top:4px; display:none;">
+              Open PDF in new tab:
+              <a id="pdfDirectLink" href="#" target="_blank" rel="noopener noreferrer">Click here</a>
+            </div>
+          </div>
+
+          <!-- FORM – Basic + County + Recording -->
+          <div>
+            <div class="section-label">Basic Info</div>
+
+            <label>Grantor</label>
+            <input id="attemptGrantor" />
+
+            <label>Grantee</label>
+            <input id="attemptGrantee" />
+
+            <label>Recording Date</label>
+            <input id="attemptRecordingDate" placeholder="MM/DD/YYYY or as shown" />
+
+            <label>Dated Date</label>
+            <input id="attemptDatedDate" placeholder="MM/DD/YYYY or as shown" />
+
+            <label>Document Type</label>
+            <select id="attemptDocType">
+              <option value="">Select</option>
+              <option>Warranty Deed</option>
+              <option>Quitclaim Deed</option>
+              <option>Deed of Trust</option>
+              <option>Grant Deed</option>
+            </select>
+
+            <div class="section-label">County Info</div>
+
+            <label>County Name</label>
+            <input id="countyName" />
+
+            <label>County State</label>
+            <input id="countyState" />
+
+            <label>APN (Assessor Parcel Number)</label>
+            <input id="apn" />
+
+            <div class="section-label">Recording Info</div>
+
+            <label>Recording Book</label>
+            <input id="recordingBook" />
+
+            <label>Recording Page</label>
+            <input id="recordingPage" />
+
+            <label>Instrument Number</label>
+            <input id="instrumentNumber" />
+
+            <button onclick="submitSimpleAttempt()">Submit Attempt</button>
+            <div id="attemptStatus" class="muted" style="margin-top:8px;"></div>
+          </div>
+        </div>
+
+        <button style="margin-top:12px;" onclick="getNextDeed()">Next Deed</button>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    // IMPORTANT: Backend URL on Render
+    const API_BASE = "https://firstfocus-deed-training-system1.onrender.com";
+
+    let currentUser = null;
+    let authToken = null;
+    let currentDeedId = null;
+
+    function $(id) {
+      return document.getElementById(id);
+    }
+
+    function showLoginOnly() {
+      $("loginCard").style.display = "block";
+      $("appArea").style.display = "none";
+      $("userInfo").textContent = "";
+    }
+
+    function showAppArea() {
+      $("loginCard").style.display = "none";
+      $("appArea").style.display = "block";
+
+      $("dashUsername").textContent = currentUser.username;
+      $("dashRole").textContent = currentUser.role;
+      $("userInfo").innerHTML =
+        "Logged in as <strong>" + currentUser.username + "</strong>";
+
+      const adminPanel = $("adminPanel");
+      const uploadPanel = $("uploadPanel");
+      const traineePanel = $("traineePanel");
+
+      adminPanel.style.display = "none";
+      uploadPanel.style.display = "none";
+      traineePanel.style.display = "none";
+
+      if (currentUser.role === "admin") {
+        adminPanel.style.display = "block";
+        uploadPanel.style.display = "block";
+        traineePanel.style.display = "block";
+      } else if (currentUser.role === "trainer") {
+        uploadPanel.style.display = "block";
+        traineePanel.style.display = "block";
+      } else if (currentUser.role === "trainee") {
+        traineePanel.style.display = "block";
+      }
+
+      // Automatically load first deed for trainee/trainer
+      if (currentUser.role === "trainee" || currentUser.role === "trainer") {
+        getNextDeed();
+      }
+    }
+
+    async function loginUser() {
+      const username = $("loginUsername").value.trim();
+      const password = $("loginPassword").value.trim();
+      if (!username || !password) {
+        alert("Enter username & password");
+        return;
+      }
+
+      try {
+        const res = await fetch(API_BASE + "/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.error || "Login failed");
+          return;
+        }
+
+        currentUser = data.user;
+        authToken = data.token;
+
+        localStorage.setItem("currentUser", JSON.stringify(currentUser));
+        localStorage.setItem("authToken", authToken);
+
+        showAppArea();
+      } catch (err) {
+        console.error(err);
+        alert("Network error");
+      }
+    }
+
+    function logout() {
+      currentUser = null;
+      authToken = null;
+      currentDeedId = null;
+      localStorage.removeItem("currentUser");
+      localStorage.removeItem("authToken");
+      showLoginOnly();
+    }
+
+    async function createUserFromAdmin() {
+      const u = $("newUser").value.trim();
+      const p = $("newPass").value.trim();
+      const role = $("newRole").value;
+      const statusEl = $("userCreateStatus");
+
+      if (!u || !p) {
+        statusEl.textContent = "Enter username and password";
+        return;
+      }
+
+      if (!authToken) {
+        statusEl.textContent = "Not authenticated – please log in again.";
+        return;
+      }
+
+      try {
+        const res = await fetch(API_BASE + "/api/users", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + authToken
+          },
+          credentials: "include",
+          body: JSON.stringify({ username: u, password: p, role })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = data.error || "Error creating user";
+          return;
+        }
+        statusEl.textContent =
+          'User "' + data.user.username + '" created with role ' + data.user.role;
+        $("newUser").value = "";
+        $("newPass").value = "";
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Network error";
+      }
+    }
+
+    async function uploadDeedToBackend() {
+      const fileInput = $("deedUploadInput");
+      const file = fileInput.files[0];
+      const statusEl = $("uploadStatus");
+      statusEl.textContent = "";
+
+      if (!file) {
+        statusEl.textContent = "Select a PDF file first.";
+        return;
+      }
+
+      if (!authToken) {
+        statusEl.textContent = "Not authenticated – please log in again.";
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("deed", file);
+
+      try {
+        const res = await fetch(API_BASE + "/api/deeds/upload", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Authorization": "Bearer " + authToken
+          },
+          body: formData
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = data.error || "Upload failed";
+          return;
+        }
+        statusEl.textContent = "Deed uploaded with ID " + data.deed.id;
+        fileInput.value = "";
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Network error";
+      }
+    }
+
+    async function uploadZipOfDeeds() {
+      const fileInput = $("zipUploadInput");
+      const file = fileInput.files[0];
+      const statusEl = $("zipUploadStatus");
+      statusEl.textContent = "";
+
+      if (!file) {
+        statusEl.textContent = "Select a ZIP file first.";
+        return;
+      }
+
+      if (!authToken) {
+        statusEl.textContent = "Not authenticated – please log in again.";
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("zip", file);
+
+      try {
+        const res = await fetch(API_BASE + "/api/deeds/upload-zip", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Authorization": "Bearer " + authToken
+          },
+          body: formData
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = data.error || "ZIP upload failed";
+          return;
+        }
+        statusEl.textContent =
+          "Uploaded " + data.count + " deeds from ZIP.";
+        fileInput.value = "";
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Network error while uploading ZIP";
+      }
+    }
+
+    function downloadMetadataTemplate() {
+      if (!authToken) {
+        $("metaStatus").textContent = "Not authenticated – please log in again.";
+        return;
+      }
+      // Use token in query for GET /template
+      const url = API_BASE + "/api/deeds/template?token=" + encodeURIComponent(authToken);
+      window.open(url, "_blank");
+    }
+
+    function uploadMetadataTemplate() {
+      const statusEl = $("metaStatus");
+      statusEl.textContent = "";
+
+      if (!authToken) {
+        statusEl.textContent = "Not authenticated – please log in again.";
+        return;
+      }
+
+      const input = $("metaFileInput");
+      const file = input.files[0];
+      if (!file) {
+        statusEl.textContent = "Select an .xlsx file first.";
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      fetch(API_BASE + "/api/deeds/metadata", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + authToken
+        },
+        credentials: "include",
+        body: formData
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, status: res.status, data: data };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok) {
+            let msg = "Metadata upload failed";
+            if (result.data) {
+              if (result.data.error) msg = result.data.error;
+              if (result.data.detail) msg += " – " + result.data.detail;
+            }
+            statusEl.textContent = msg;
+            return;
+          }
+          let msg = result.data.message || "Metadata updated.";
+          if (result.data.notFound && result.data.notFound.length > 0) {
+            msg += " Not found: " + result.data.notFound.join(", ");
+          }
+          statusEl.textContent = msg;
+          input.value = "";
+        })
+        .catch(function (err) {
+          console.error(err);
+          statusEl.textContent = "Network error during metadata upload.";
+        });
+    }
+
+    function getNextDeed() {
+      const statusEl = $("attemptStatus");
+      const infoEl = $("currentDeedInfo");
+      const viewer = $("deedViewer");
+      const hint = $("viewerHint");
+      const linkRow = $("pdfLinkRow");
+
+      statusEl.textContent = "";
+      infoEl.textContent = "";
+      viewer.textContent = "Loading next deed...";
+      hint.textContent = "Loading next deed...";
+      if (linkRow) linkRow.style.display = "none";
+      currentDeedId = null;
+
+      if (!authToken) {
+        statusEl.textContent = "Not authenticated – please log in again.";
+        hint.textContent = "Not authenticated – please log in again.";
+        viewer.textContent = "Not authenticated.";
+        return;
+      }
+
+      fetch(API_BASE + "/api/deeds/next", {
+        method: "GET",
+        headers: {
+          "Authorization": "Bearer " + authToken
+        },
+        credentials: "include"
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, status: res.status, data: data };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok) {
+            const msg = result.data && result.data.error
+              ? result.data.error
+              : "No more deeds available";
+            statusEl.textContent = msg;
+            hint.textContent = msg;
+            viewer.textContent = "No deed loaded.";
+            infoEl.textContent = "No deed loaded.";
+            currentDeedId = null;
+            return;
+          }
+
+          const deed = result.data.deed;
+          currentDeedId = deed.id;
+
+          infoEl.textContent =
+            "Current Deed: ID " + deed.id +
+            (deed.filename ? " (" + deed.filename + ")" : "");
+
+          loadPDFForCurrentDeed();
+        })
+        .catch(function (err) {
+          console.error("Error in getNextDeed:", err);
+          statusEl.textContent = "Network error while fetching next deed";
+          hint.textContent = "Network error while fetching next deed";
+          viewer.textContent = "Network error.";
+        });
+    }
+
+    function loadPDFForCurrentDeed() {
+      const viewer = $("deedViewer");
+      const hint = $("viewerHint");
+      const linkRow = $("pdfLinkRow");
+      const linkEl = $("pdfDirectLink");
+
+      if (!currentDeedId || !authToken) {
+        viewer.textContent = "No deed loaded.";
+        if (linkRow) linkRow.style.display = "none";
+        return;
+      }
+
+      fetch(API_BASE + "/api/deeds/" + currentDeedId, {
+        method: "GET",
+        headers: { "Authorization": "Bearer " + authToken },
+        credentials: "include"
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, status: res.status, data: data };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok) {
+            viewer.textContent =
+              "Could not load deed details (HTTP " + result.status + ").";
+            hint.textContent =
+              (result.data && result.data.error)
+                ? result.data.error
+                : "Failed to load deed.";
+            if (linkRow) linkRow.style.display = "none";
+            return;
+          }
+
+          const deed = result.data.deed;
+          if (!deed || !deed.filepath) {
+            viewer.textContent = "This deed does not have a PDF file path stored.";
+            hint.textContent = "Ask admin to re-upload this deed’s PDF.";
+            if (linkRow) linkRow.style.display = "none";
+            return;
+          }
+
+          const pdfUrl = API_BASE + "/uploads/" + deed.filepath;
+
+          viewer.textContent =
+            "PDF is ready. Use the link below to open it in a new tab.";
+          hint.textContent =
+            "Showing Deed ID " + deed.id +
+            (deed.filename ? " (" + deed.filename + ")" : "") +
+            " (new tab link below).";
+
+          if (linkRow && linkEl) {
+            linkEl.href = pdfUrl;
+            linkRow.style.display = "inline";
+          }
+        })
+        .catch(function (err) {
+          console.error("Error loading deed for PDF:", err);
+          viewer.textContent = "Network error while loading deed.";
+          hint.textContent = "Network error while loading deed.";
+          if (linkRow) linkRow.style.display = "none";
+        });
+    }
+
+    function submitSimpleAttempt() {
+      const statusEl = $("attemptStatus");
+      statusEl.textContent = "";
+
+      if (!authToken) {
+        statusEl.textContent = "Not authenticated – please log in again.";
+        return;
+      }
+
+      if (!currentDeedId) {
+        statusEl.textContent = "No deed loaded. Click “Next Deed” to start.";
+        return;
+      }
+
+      const body = {
+        deed_id: currentDeedId,
+        grantor: $("attemptGrantor").value,
+        grantee: $("attemptGrantee").value,
+        recording_date: $("attemptRecordingDate").value,
+        dated_date: $("attemptDatedDate").value,
+        document_type: $("attemptDocType").value,
+        county_name: $("countyName").value,
+        county_state: $("countyState").value,
+        apn: $("apn").value,
+        recording_book: $("recordingBook").value,
+        recording_page: $("recordingPage").value,
+        instrument_number: $("instrumentNumber").value,
+        time_taken_seconds: 0
+      };
+
+      fetch(API_BASE + "/api/attempts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + authToken
+        },
+        credentials: "include",
+        body: JSON.stringify(body)
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, status: res.status, data: data };
+          });
+        })
+        .then(function (result) {
+          console.log("Attempt API result:", result);
+
+          if (!result.ok) {
+            let msg = "Failed to save attempt";
+            if (result.data && result.data.error) {
+              msg = result.data.error;
+            } else {
+              msg += " (HTTP " + result.status + ")";
+            }
+            statusEl.textContent = msg;
+            return;
+          }
+
+          const data = result.data;
+          let score = null;
+
+          if (typeof data.score === "number") {
+            score = data.score;
+          } else if (data.attempt && typeof data.attempt.total_score === "number") {
+            score = data.attempt.total_score;
+          }
+
+          let feedbackText = "";
+          if (typeof data.feedback === "string") {
+            feedbackText = data.feedback;
+          } else if (data.feedback && data.feedback.message) {
+            feedbackText = data.feedback.message;
+          } else if (data.attempt && typeof data.attempt.feedback === "string") {
+            feedbackText = data.attempt.feedback;
+          } else if (data.attempt && data.attempt.feedback && data.attempt.feedback.message) {
+            feedbackText = data.attempt.feedback.message;
+          }
+
+          let msg = "";
+          if (score !== null) {
+            msg += "Score: " + score + "/100. ";
+          }
+          if (feedbackText) {
+            msg += feedbackText;
+          } else {
+            msg += "Attempt saved. When ready, click “Next Deed” to continue.";
+          }
+
+          statusEl.textContent = msg;
+        })
+        .catch(function (err) {
+          console.error("submitSimpleAttempt error:", err);
+          statusEl.textContent = "Network error while saving attempt.";
+        });
+    }
+
+    // Auto-login if token stored
+    (function init() {
+      const storedUser = localStorage.getItem("currentUser");
+      const storedToken = localStorage.getItem("authToken");
+      if (storedUser && storedToken) {
+        try {
+          currentUser = JSON.parse(storedUser);
+          authToken = storedToken;
+          showAppArea();
+        } catch (e) {
+          console.error("Error parsing stored user:", e);
+        }
+      }
+    })();
+  </script>
+</body>
+</html>
